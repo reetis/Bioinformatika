@@ -42,20 +42,54 @@ def get_suitable_formats(min_val, max_val, formats):
     return new_formats
 
 
+def smooth(x, window_len=7, window='blackman'):
+    if x.ndim != 1:
+        raise ValueError("smooth only accepts 1 dimension arrays.")
+
+    if x.size < window_len:
+        raise ValueError("Input vector needs to be bigger than window size.")
+
+    if window_len < 3:
+        return x
+
+    if window not in ['flat', 'hanning', 'hamming', 'bartlett', 'blackman']:
+        raise ValueError("Window is on of 'flat', 'hanning', 'hamming', 'bartlett', 'blackman'")
+
+    s = np.r_[x[window_len - 1:0:-1], x, x[-1:-window_len:-1]]  # print(len(s))
+    if window == 'flat':  # moving average
+        w = np.ones(window_len, 'd')
+    else:
+        w = eval('np.' + window + '(window_len)')
+
+    y = np.convolve(w / w.sum(), s, mode='valid')
+    return y[(window_len / 2 - 1):-(window_len / 2)]
+
+
 if __name__ == '__main__':
     records = SeqIO.parse(FILENAME, get_fastq_format()["format"])
     values = []
     for record in records:
         seq = record.seq
         gc_count = seq.count("G") + seq.count("C")
-        gc_ratio = gc_count / len(seq)
+        gc_ratio = gc_count / len(seq) * 100
         values.append((record, gc_ratio))
 
-    n, bins, _ = plt.hist([value[1] for value in values], bins=25, range=(0, 1))
+    plt.subplot(211)
+    n, bins, _ = plt.hist([value[1] for value in values], bins=100, range=(0, 100))
     plt.title("G/C frequency")
+    plt.xlabel("Probability")
+    plt.ylabel("Count")
+    plt.subplot(212)
+    n_25, _, _ = plt.hist([value[1] for value in values], bins=25, range=(0, 100))
+    plt.title("G/C frequency smoothed")
     plt.xlabel("Probability")
     plt.ylabel("Count")
     plt.show()
 
-    peaks = argrelextrema(n, np.greater)
+    coarse_peaks = argrelextrema(n_25, np.greater)
+    print(coarse_peaks[0])
+    peaks = [peak * 4 + np.argmax(n[peak * 4:peak * 4 + 4]) for peak in coarse_peaks[0]]
+    ranges = map(lambda x: (bins[x], bins[x + 1]), peaks)
     print(peaks)
+    for r in ranges:
+        print(r)

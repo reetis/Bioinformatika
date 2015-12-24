@@ -1,16 +1,29 @@
+import hashlib
+from pickle import Pickler, Unpickler
+from typing import List
+
 import matplotlib.pyplot as plt
 import numpy as np
 from Bio import SeqIO
+from Bio.Blast import NCBIXML, NCBIWWW, Record
+from tabulate import tabulate
+
+FILENAME = "reads_for_analysis.fastq"
+FASTQ_FORMATS = [
+    {"name": "Sanger", "min": 33, "max": 73, "format": "fastq-sanger"},
+    {"name": "Solexa", "min": 59, "max": 104, "format": "fastq-solexa"},
+    {"name": "Illumina 1.3+", "min": 64, "max": 104, "format": "fastq-illumina"},
+    {"name": "Illumina 1.5+", "min": 66, "max": 104, "format": "fastq-illumina"},
+    {"name": "Illumina 1.8+", "min": 33, "max": 74, "format": "fastq-sanger"}
+]
 
 
-def peakIndexes(y, thres=0.3, min_dist=1):
-    thres *= np.max(y) - np.min(y)
+def peak_indexes(y: List[float], threshold: float = 0.3, min_dist: int = 1) -> List[int]:
+    threshold *= np.max(y) - np.min(y)
 
     # find the peaks by using the first order difference
     dy = np.diff(y)
-    peaks = np.where((np.hstack([dy, 0.]) < 0.)
-                     & (np.hstack([0., dy]) > 0.)
-                     & (y > thres))[0]
+    peaks = np.where((np.hstack([dy, 0.]) < 0.) & (np.hstack([0., dy]) > 0.) & (y > threshold))[0]
 
     if peaks.size > 1 and min_dist > 1:
         highest = peaks[np.argsort(y[peaks])][::-1]
@@ -26,16 +39,6 @@ def peakIndexes(y, thres=0.3, min_dist=1):
         peaks = np.arange(y.size)[~rem]
 
     return peaks
-
-
-FILENAME = "reads_for_analysis.fastq"
-FASTQ_FORMATS = [
-    {"name": "Sanger", "min": 33, "max": 73, "format": "fastq-sanger"},
-    {"name": "Solexa", "min": 59, "max": 104, "format": "fastq-solexa"},
-    {"name": "Illumina 1.3+", "min": 64, "max": 104, "format": "fastq-illumina"},
-    {"name": "Illumina 1.5+", "min": 66, "max": 104, "format": "fastq-illumina"},
-    {"name": "Illumina 1.8+", "min": 33, "max": 74, "format": "fastq-sanger"}
-]
 
 
 def get_fastq_format():
@@ -59,7 +62,7 @@ def get_fastq_format():
         return q_formats[0]
 
 
-def get_suitable_formats(min_val, max_val, formats):
+def get_suitable_formats(min_val: int, max_val: int, formats):
     new_formats = []
     for format_desc in formats:
         if format_desc["min"] <= min_val <= format_desc["max"] and format_desc["min"] <= max_val <= format_desc["max"]:
@@ -67,7 +70,7 @@ def get_suitable_formats(min_val, max_val, formats):
     return new_formats
 
 
-def get_records():
+def get_records() -> (Record.SeqRecord, float):
     global values
     records = SeqIO.parse(FILENAME, get_fastq_format()["format"])
     values = []
@@ -79,10 +82,36 @@ def get_records():
     return values
 
 
-def get_peak_ranges(bins, bin_values):
-    peaks = peakIndexes(bin_values, min_dist=15)
-    ranges = map(lambda x: (bins[x], bins[x + 1]), peaks)
-    return ranges
+def get_peak_ranges(data_bins: List[float], bin_values: List[int]):
+    peaks = peak_indexes(bin_values, min_dist=15)
+    peak_ranges = []
+    for peak in peaks:
+        peak_ranges.append((data_bins[peak], data_bins[peak + 1]))
+    return peak_ranges
+
+
+def get_results_from_db(query: str, seq: str, hitlist_size: int, db: str = 'nr') -> Record.Blast:
+    hashing = hashlib.sha1()
+    hashing.update(str.encode(query))
+    hashing.update(str.encode(seq))
+    hashing.update(str.encode(db))
+    hashing.update(str.encode('{}'.format(hitlist_size)))
+    cache_filename = '{}.cache'.format(hashing.hexdigest())
+
+    try:
+        with open(cache_filename, 'rb') as cache_file:
+            cached_object = Unpickler(cache_file).load()
+        return cached_object
+    except FileNotFoundError:
+        ncbi = NCBIWWW.qblast(program='blastn',
+                              database=db,
+                              sequence=seq,
+                              entrez_query=query,
+                              hitlist_size=hitlist_size,
+                              expect=100.0, )
+        blast = NCBIXML.read(ncbi)
+        Pickler(open(cache_filename, 'wb')).dump(blast)
+        return blast
 
 
 if __name__ == '__main__':
@@ -90,10 +119,17 @@ if __name__ == '__main__':
 
     n, bins, _ = plt.hist([value[1] for value in values], bins=100, range=(0, 100))
     plt.title("G/C frequency")
-    plt.xlabel("Probability")
+    plt.xlabel("Frequency (%)")
     plt.ylabel("Count")
-    # plt.show()
+    plt.show()
 
     ranges = get_peak_ranges(bins, n)
+    headers = ['ID', 'Rūšis']
+    table = []
     for r in ranges:
-        print(r)
+        peak_records = [rec for rec in values if r[0] <= rec[1] <= r[1]][:5]
+        for rec in peak_records:
+            result = get_results_from_db('bacteria[Organism]', rec[0].seq._data, hitlist_size=1)
+            table.append([rec[0].description, result.alignments[0].hit_def])
+
+    print(tabulate(table, headers))
